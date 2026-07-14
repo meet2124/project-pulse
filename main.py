@@ -41,6 +41,33 @@ from backend.core.exceptions import (
     ValidationException,
 )
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    # ── Startup ───────────────────────────────────────────────────────────────
+    logger.info(
+        "Project Pulse starting.",
+        version="0.1.0",
+        environment=_settings.app_env,
+        docs="http://localhost:8000/docs",
+    )
+    try:
+        from backend.core.database import get_supabase_client
+        client = get_supabase_client()
+        client.table("projects").select("id").limit(1).execute()
+        logger.info("Database connectivity verified.")
+    except Exception as exc:
+        logger.critical("FATAL: DB unreachable at startup.", error=str(exc))
+        sys.exit(1)
+
+    yield  # application runs here
+
+    # ── Shutdown ──────────────────────────────────────────────────────────────
+    logger.info("Project Pulse shutting down.")
+
+
 app = FastAPI(
     title=_settings.app_name,
     description=(
@@ -49,6 +76,7 @@ app = FastAPI(
         "Built with Python 3.12, Pydantic v2, Supabase (PostgreSQL + pgvector), FastAPI."
     ),
     version="0.1.0",
+    lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
     contact={"name": "Meet Purohit", "url": "https://github.com/meet2124"},
@@ -75,26 +103,6 @@ app.include_router(projects_router, prefix="/api/v1")
 # Future:
 # app.include_router(agents_router,  prefix="/api/v1")
 # app.include_router(auth_router,    prefix="/api/v1")
-
-# ── Lifecycle Events ───────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def on_startup() -> None:
-    logger.info(
-        "Project Pulse starting.",
-        version="0.1.0",
-        environment=_settings.app_env,
-        docs="http://localhost:8000/docs",
-    )
-    # Verify DB is reachable before accepting traffic
-    try:
-        from backend.core.database import get_supabase_client
-        client = get_supabase_client()
-        client.table("projects").select("id").limit(1).execute()
-        logger.info("Database connectivity verified.")
-    except Exception as exc:
-        logger.critical("FATAL: DB unreachable at startup. Check .env and Supabase status.", error=str(exc))
-        sys.exit(1)
-
 
 # ── Infrastructure Routes ──────────────────────────────────────────────────────
 @app.get("/health", tags=["Infrastructure"], summary="Liveness probe")
