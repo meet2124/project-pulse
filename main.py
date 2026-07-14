@@ -1,110 +1,111 @@
 """
 main.py — Project Pulse application entry point.
 
-This is the single bootstrap file that:
-  1. Initializes logging (must happen FIRST, before any other imports that log)
-  2. Validates configuration (process crashes loudly if secrets are missing)
-  3. Verifies DB connectivity
-  4. Exposes the FastAPI `app` instance for ASGI servers (uvicorn, gunicorn+uvicorn)
-
-Running locally:
-  python main.py          → runs with uvicorn in dev mode (auto-reload)
-  uvicorn main:app        → production-style ASGI run (no auto-reload)
+Bootstrap order (MUST be preserved):
+  1. Load settings + configure logging  ← before anything that logs
+  2. Build FastAPI app + register exception handlers
+  3. Mount all routers
+  4. Verify DB connectivity on startup
 """
 
 from __future__ import annotations
 
 import sys
 
-# ── Step 1: Bootstrap logging BEFORE any other app imports ────────────────────
-# Importing core.config triggers pydantic-settings which uses stdlib logging,
-# so we must configure our logging stack first.
+# ── 1. Bootstrap: settings + logging (must run first) ────────────────────────
 from backend.core.config import get_settings
 from backend.core.logging_config import configure_logging
 
 _settings = get_settings()
 configure_logging(log_level=_settings.log_level, is_production=_settings.is_production)
 
-# ── Step 2: Standard imports (logging is now ready) ───────────────────────────
 import structlog
-
-from backend.core.database import get_supabase_client
-from backend.core.exceptions import DatabaseConnectionException
 
 logger = structlog.get_logger(__name__)
 
+# ── 2. FastAPI app ─────────────────────────────────────────────────────────────
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-def _verify_db_connection() -> None:
-    """Attempt a lightweight DB ping on startup to fail fast if unreachable."""
+from backend.api.exception_handlers import (
+    duplicate_record_handler,
+    not_found_handler,
+    pulse_base_exception_handler,
+    validation_exception_handler,
+)
+from backend.api.projects import router as projects_router
+from backend.core.exceptions import (
+    DuplicateRecordException,
+    PulseBaseException,
+    RecordNotFoundException,
+    ValidationException,
+)
+
+app = FastAPI(
+    title=_settings.app_name,
+    description=(
+        "**Project Pulse** — High-performance RAG-augmented workflow orchestrator "
+        "and developer knowledge graph.\n\n"
+        "Built with Python 3.12, Pydantic v2, Supabase (PostgreSQL + pgvector), FastAPI."
+    ),
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    contact={"name": "Meet Purohit", "url": "https://github.com/meet2124"},
+)
+
+# ── CORS ───────────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if not _settings.is_production else [],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Exception Handlers ─────────────────────────────────────────────────────────
+# Order matters: more specific types must be registered before the base class.
+app.add_exception_handler(RecordNotFoundException, not_found_handler)          # type: ignore[arg-type]
+app.add_exception_handler(DuplicateRecordException, duplicate_record_handler)  # type: ignore[arg-type]
+app.add_exception_handler(ValidationException, validation_exception_handler)   # type: ignore[arg-type]
+app.add_exception_handler(PulseBaseException, pulse_base_exception_handler)    # type: ignore[arg-type]
+
+# ── Routers ────────────────────────────────────────────────────────────────────
+app.include_router(projects_router, prefix="/api/v1")
+# Future:
+# app.include_router(agents_router,  prefix="/api/v1")
+# app.include_router(auth_router,    prefix="/api/v1")
+
+# ── Lifecycle Events ───────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def on_startup() -> None:
+    logger.info(
+        "Project Pulse starting.",
+        version="0.1.0",
+        environment=_settings.app_env,
+        docs="http://localhost:8000/docs",
+    )
+    # Verify DB is reachable before accepting traffic
     try:
+        from backend.core.database import get_supabase_client
         client = get_supabase_client()
-        # Lightweight existence check — O(1), returns at most 1 row
         client.table("projects").select("id").limit(1).execute()
         logger.info("Database connectivity verified.")
-    except DatabaseConnectionException as exc:
-        logger.critical("FATAL: Cannot connect to database. Aborting startup.", error=str(exc))
-        sys.exit(1)
     except Exception as exc:
-        # Table might not exist yet (first run) — that's acceptable.
-        # A connection error would have raised DatabaseConnectionException above.
-        logger.warning(
-            "DB ping returned an error (table may not exist yet — run migrations).",
-            error=str(exc),
-        )
+        logger.critical("FATAL: DB unreachable at startup. Check .env and Supabase status.", error=str(exc))
+        sys.exit(1)
 
 
-# ── Step 3: FastAPI Application ────────────────────────────────────────────────
-try:
-    from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
-
-    app = FastAPI(
-        title=_settings.app_name,
-        description=(
-            "Project Pulse — High-performance RAG-augmented workflow orchestrator "
-            "and developer knowledge graph engine."
-        ),
-        version="0.1.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
-    )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"] if not _settings.is_production else [],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    @app.on_event("startup")
-    async def on_startup() -> None:
-        logger.info(
-            "Project Pulse starting up.",
-            environment=_settings.app_env,
-            version="0.1.0",
-        )
-        _verify_db_connection()
-
-    @app.get("/health", tags=["Infrastructure"])
-    async def health_check() -> dict[str, str]:
-        """Liveness probe endpoint for container orchestrators (K8s, ECS)."""
-        return {"status": "healthy", "service": _settings.app_name}
-
-    # ── Register routers here as they are built ────────────────────────────────
-    # from backend.api.projects import router as projects_router
-    # app.include_router(projects_router, prefix="/api/v1/projects", tags=["Projects"])
-
-except ImportError:
-    # FastAPI not installed — graceful degradation for script-only usage
-    logger.warning("FastAPI not installed. API layer disabled. Install with: pip install fastapi uvicorn")
-    app = None  # type: ignore[assignment]
+# ── Infrastructure Routes ──────────────────────────────────────────────────────
+@app.get("/health", tags=["Infrastructure"], summary="Liveness probe")
+async def health_check() -> dict[str, str]:
+    """Used by container orchestrators (K8s, ECS) to verify the process is alive."""
+    return {"status": "healthy", "service": _settings.app_name, "version": "0.1.0"}
 
 
-# ── Step 4: Dev server entrypoint ─────────────────────────────────────────────
+# ── Dev Server Entrypoint ──────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import uvicorn  # type: ignore[import]
-
+    import uvicorn
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
