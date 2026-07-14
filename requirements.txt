@@ -1,0 +1,27 @@
+# Project Pulse — Python Dependencies
+# Pin minor versions for reproducibility; bump intentionally during upgrades.
+
+# ── Core Infrastructure ────────────────────────────────────────────────────────
+supabase>=2.10.0,<3.0.0          # Supabase Python SDK (includes postgrest, realtime)
+python-dotenv>=1.0.0,<2.0.0      # .env file loader (used only by pydantic-settings internally)
+pydantic>=2.7.0,<3.0.0           # Data validation, serialization
+pydantic-settings>=2.2.0,<3.0.0  # Settings management from environment variables
+
+# ── Observability ──────────────────────────────────────────────────────────────
+structlog>=24.1.0,<25.0.0        # Structured logging with processor pipeline
+rich>=13.7.0,<15.0.0             # Rich terminal output (smoke test, dev CLI)
+
+# ── API Layer (uncomment when FastAPI routes are added) ────────────────────────
+fastapi>=0.111.0,<1.0.0          # Async web framework
+uvicorn[standard]>=0.29.0,<1.0.0 # ASGI server (standard = includes websockets, watchfiles)
+
+# ── AI / Embeddings (Phase 2 — uncomment when ready) ─────────────────────────
+# openai>=1.30.0,<2.0.0          # OpenAI SDK (embeddings + completions)
+# google-generativeai>=0.7.0     # Gemini API (alternative model backend)
+# langchain>=0.2.0,<1.0.0        # LangChain orchestration (optional)
+# pgvector>=0.3.0                # pgvector Python type helpers
+
+# ── Testing (dev only) ────────────────────────────────────────────────────────
+# pytest>=8.0.0
+# pytest-asyncio>=0.23.0
+# pytest-mock>=3.14.0
